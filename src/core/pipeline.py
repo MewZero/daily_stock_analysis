@@ -1119,7 +1119,7 @@ class StockAnalysisPipeline:
                     skip_analysis=dry_run,
                     single_stock_notify=single_stock_notify and send_notification,
                     report_type=report_type,  # Issue #119: 传递报告类型
-                    analysis_query_id=uuid.uuid4().hex,
+                    analysis_query_id=f"{self.query_id}_{uuid.uuid4().hex[:8]}" if self.query_id else uuid.uuid4().hex,
                 ): code
                 for code in stock_codes
             }

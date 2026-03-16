@@ -80,7 +80,7 @@ def update_user(user_id: str, user_data: Dict[str, Any]):
 
 # ===== 分析逻辑 =====
 
-def run_analysis(stock_codes: List[str]) -> str:
+def run_analysis(stock_codes: List[str], discord_user_id: str = "", discord_username: str = "") -> str:
     try:
         from src.config import get_config
         from src.core.pipeline import StockAnalysisPipeline
@@ -88,7 +88,14 @@ def run_analysis(stock_codes: List[str]) -> str:
         config = get_config()
         config.stock_list = stock_codes
 
-        query_id = uuid.uuid4().hex
+        # query_id 格式: discord_{user_id}_{username}_{hex}，方便在数据库里追踪是谁触发的
+        suffix = uuid.uuid4().hex[:12]
+        if discord_user_id:
+            safe_name = discord_username.replace(" ", "_")[:20]
+            query_id = f"discord_{discord_user_id}_{safe_name}_{suffix}"
+        else:
+            query_id = f"discord_{suffix}"
+
         pipeline = StockAnalysisPipeline(
             config=config,
             max_workers=3,
@@ -127,11 +134,19 @@ def run_analysis(stock_codes: List[str]) -> str:
 async def scheduler_loop():
     """每分钟检查是否有用户需要定时推送"""
     await client.wait_until_ready()
+    fired_today: dict = {}  # {user_id: "HH:MM"} 记录今天已触发的时间，防止同一分钟重复触发
     while not client.is_closed():
         now = datetime.now().strftime("%H:%M")
+        today = datetime.now().strftime("%Y-%m-%d")
+        # 每天零点重置已触发记录
+        fired_today = {k: v for k, v in fired_today.items() if v.startswith(today)}
         data = load_user_data()
         for user_id, user_data in data.items():
-            if user_data.get("schedule") == now and user_data.get("watchlist") and user_data.get("channel_id"):
+            fired_key = f"{today}_{now}"
+            if (user_data.get("schedule") == now
+                    and user_data.get("watchlist")
+                    and user_data.get("channel_id")
+                    and fired_today.get(user_id) != fired_key):
                 channel = client.get_channel(int(user_data["channel_id"]))
                 if channel:
                     mention = f"<@{user_id}>"
@@ -139,11 +154,13 @@ async def scheduler_loop():
                     await channel.send(f"{mention} ⏰ 定时推送开始分析: **{', '.join(stocks)}**\n大约需要 3-5 分钟...")
 
                     loop = asyncio.get_event_loop()
-                    def run_scheduled(s=stocks, c=channel, m=mention):
-                        result = run_analysis(s)
+                    username = user_data.get("username", "")
+                    def run_scheduled(s=stocks, c=channel, m=mention, uid=user_id, uname=username):
+                        result = run_analysis(s, discord_user_id=uid, discord_username=uname)
                         asyncio.run_coroutine_threadsafe(
                             c.send(f"{m}\n{result}"), loop
                         )
+                    fired_today[user_id] = fired_key
                     threading.Thread(target=run_scheduled, daemon=True).start()
 
         await asyncio.sleep(60)
@@ -195,6 +212,7 @@ async def on_message(message: discord.Message):
         parts = content.split()
         user_data = get_user(user_id)
         user_data["channel_id"] = str(message.channel.id)
+        user_data["username"] = str(message.author.name)
 
         if len(parts) >= 3 and parts[1] == "add":
             new_stocks = [s.upper() for s in parts[2:]]
@@ -270,9 +288,12 @@ async def on_message(message: discord.Message):
 
         loop = asyncio.get_event_loop()
 
+        uid = user_id
+        uname = str(message.author.name)
+
         def run_and_release():
             try:
-                result = run_analysis(stock_codes)
+                result = run_analysis(stock_codes, discord_user_id=uid, discord_username=uname)
                 asyncio.run_coroutine_threadsafe(
                     message.channel.send(f"{mention}\n{result}"), loop
                 )
