@@ -25,7 +25,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
+_channel_ids_raw = os.getenv("BOT_CHANNEL_IDS", os.getenv("DISCORD_CHANNEL_ID", "0"))
+CHANNEL_IDS = [int(x.strip()) for x in _channel_ids_raw.split(",") if x.strip()]
 
 if not BOT_TOKEN:
     print("错误: 未配置 DISCORD_BOT_TOKEN")
@@ -68,11 +69,11 @@ def run_analysis(stock_codes: List[str]) -> str:
 
         lines = ["**分析完成** ✅"]
         for r in results:
-            code = getattr(r, 'stock_code', '?')
-            name = getattr(r, 'stock_name', code)
-            suggestion = getattr(r, 'suggestion', '')
-            score = getattr(r, 'score', '')
-            trend = getattr(r, 'trend', '')
+            code = getattr(r, 'code', '?')
+            name = getattr(r, 'name', code)
+            suggestion = getattr(r, 'operation_advice', '')
+            score = getattr(r, 'sentiment_score', '')
+            trend = getattr(r, 'trend_prediction', '')
             lines.append(f"• **{name}({code})** — {suggestion} | 评分 {score} | {trend}")
 
         return "\n".join(lines)
@@ -85,9 +86,10 @@ def run_analysis(stock_codes: List[str]) -> str:
 @client.event
 async def on_ready():
     logger.info(f"Bot 已上线: {client.user}")
-    channel = client.get_channel(CHANNEL_ID)
-    if channel:
-        await channel.send("股票分析 Bot 已上线 ✅\n发送 `!analyze 股票代码` 开始分析，例如: `!analyze NOW AAPL`")
+    for cid in CHANNEL_IDS:
+        channel = client.get_channel(cid)
+        if channel:
+            await channel.send("股票分析 Bot 已上线 ✅\n发送 `!analyze 股票代码` 开始分析，例如: `!analyze NOW AAPL`")
 
 
 @client.event
@@ -104,6 +106,9 @@ async def on_message(message: discord.Message):
             "`!analyze` — 分析默认股票列表 (STOCK_LIST)\n"
             "`!help` — 显示此帮助"
         )
+        return
+
+    if message.channel.id not in CHANNEL_IDS:
         return
 
     if content.startswith("!analyze"):
@@ -123,7 +128,8 @@ async def on_message(message: discord.Message):
             await message.channel.send("❌ 请提供股票代码，例如: `!analyze NOW AAPL`")
             return
 
-        await message.channel.send(f"🔍 开始分析: **{', '.join(stock_codes)}**\n大约需要 3-5 分钟，结果会直接发到此频道...")
+        author_mention = message.author.mention
+        await message.channel.send(f"{author_mention} 🔍 开始分析: **{', '.join(stock_codes)}**\n大约需要 3-5 分钟，结果会直接发到此频道...")
 
         loop = asyncio.get_event_loop()
 
@@ -131,7 +137,7 @@ async def on_message(message: discord.Message):
             try:
                 result = run_analysis(stock_codes)
                 asyncio.run_coroutine_threadsafe(
-                    message.channel.send(result), loop
+                    message.channel.send(f"{author_mention}\n{result}"), loop
                 )
             finally:
                 analysis_lock.release()
